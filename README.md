@@ -1,4 +1,3 @@
-cat > README.md << 'EOF'
 # PHANTOM — Web App VAPT Automation Framework
 
 > Bug Bounty Automator | Python 3.11+
