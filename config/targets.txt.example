@@ -1,0 +1,9 @@
+# PHANTOM Targets — one domain per line
+# Copy this file to targets.txt and add your targets
+
+# Legal practice targets
+testphp.vulnweb.com
+scanme.nmap.org
+
+# Your bug bounty targets here
+# example.com

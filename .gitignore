@@ -1,0 +1,74 @@
+# ── Python ────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg
+*.egg-info/
+dist/
+build/
+eggs/
+parts/
+var/
+sdist/
+develop-eggs/
+.installed.cfg
+lib/
+lib64/
+
+# ── Virtual Environment ───────────────────────────────────────
+venv/
+env/
+ENV/
+.venv/
+
+# ── PHANTOM Scan Output ───────────────────────────────────────
+# Never commit scan results — they contain target data
+output/
+logs/
+reports/html/
+reports/pdf/
+
+# ── Sensitive Config ──────────────────────────────────────────
+# API keys, secrets — never commit
+.env
+.env.*
+config/targets.txt
+
+# ── Wordlists ─────────────────────────────────────────────────
+# Too large for git, downloaded at setup
+config/wordlists/
+
+# ── SQLMap Session Files ──────────────────────────────────────
+.sqlmap/
+
+# ── Playwright ────────────────────────────────────────────────
+playwright-report/
+test-results/
+
+# ── macOS ─────────────────────────────────────────────────────
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.Spotlight-V100
+.Trashes
+
+# ── IDE ───────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ── Pytest ────────────────────────────────────────────────────
+.pytest_cache/
+.coverage
+htmlcov/
+
+# ── Misc ──────────────────────────────────────────────────────
+*.log
+*.tmp
+*.bak
+EOF
