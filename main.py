@@ -20,6 +20,7 @@ from modules.param_discovery import discover_parameters, ParamScanResult
 from modules.xss_scanner import scan_xss, XSSScanResult
 from modules.xss_verifier import verify_xss_findings, VerifierReport
 from modules.sqli_scanner import scan_sqli, SQLiScanResult
+from modules.ssrf_redirect import scan_ssrf_redirect, SSRFRedirectResult
 
 app = typer.Typer(
     name="phantom",
@@ -207,6 +208,17 @@ def _run_pipeline(target: str) -> None:
         param_result,
         # exploit_mode=True  ← uncomment for full SQLMap exploitation
     )
+
+    # SSRF + Open Redirect
+    ssrf_result = _run_step(
+        "SSRF + Open Redirect",
+        SSRFRedirectResult(target=target),
+        scan_ssrf_redirect,
+        probe_result,
+        param_result,
+    )
+    log.info(f"[PIPELINE] SSRF findings: {len(ssrf_result.findings)}")
+    log.info(f"[PIPELINE] Attack chains: {ssrf_result.chain_count}")
 
     log.info(f"[PIPELINE] Scan complete: {target}")
 
