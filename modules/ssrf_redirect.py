@@ -26,12 +26,12 @@ OUTPUT_PATH = Path(OUTPUT_DIR) / "ssrf_redirect"
 # CONSTANTS
 # Configurable via env — set PHANTOM_OOB_HOST to your public IP/domain
 # when running from a VPS. Falls back to local IP (NAT = OOB won't work).
-OOB_HOST: str = os.environ.get("PHANTOM_OOB_HOST", "")
+OOB_HOST: str = os.environ.get("PHANTOM_OOB_HOST", "").strip()
 OOB_PORT: int = int(os.environ.get("PHANTOM_OOB_PORT", "19876"))
 OOB_WAIT_S: float = 8.0    # Seconds to wait for callback after injection
 OOB_READ_TIMEOUT_S: float = 3.0
 
-CONCURRENCY: int = int(os.environ.get("PHANTOM_SSRF_CONCURRENCY", str(min(MAX_THREADS, 10))))
+CONCURRENCY: int = int(os.environ.get("PHANTOM_SSRF_CONCURRENCY", str(min(MAX_THREADS, 8))))
 REQUEST_TIMEOUT: float = float(HTTP_TIMEOUT)
 MAX_RETRIES: int = 2
 RETRY_BACKOFF_S: float = 1.2
@@ -276,6 +276,7 @@ class OOBListener:
     def __init__(self) -> None:
         self._hits:   set[str] = set()
         self._server: asyncio.AbstractServer | None = None
+        self._canaries: set[str] = set()   # Track what we're waiting for
 
     async def start(self) -> None:
         if not OOB_HOST:
@@ -286,35 +287,25 @@ class OOBListener:
             return
 
         try:
-            self._server = await asyncio.start_server(
-                self._handle,
-                "0.0.0.0",
-                OOB_PORT,
-            )
+            self._server = await asyncio.start_server(self._handle, "0.0.0.0", OOB_PORT)
             log.info(f"[OOB] HTTP listener active on {OOB_HOST}:{OOB_PORT}")
         except OSError as exc:
             log.warning(f"[OOB] Cannot bind port {OOB_PORT}: {exc} — OOB disabled")
             self._server = None
 
     async def stop(self) -> None:
-        if self._server is not None:
+        if self._server:
             self._server.close()
             await self._server.wait_closed()
 
-    async def _handle(
-        self,
-        reader: asyncio.StreamReader,
-        writer: asyncio.StreamWriter,
-    ) -> None:
+    async def _handle(self, reader: asyncio.StreamReader,writer: asyncio.StreamWriter) -> None:
         """
         Reads the HTTP request line, extracts UUID canary from path,
         sends HTTP 200 response so the target doesn't retry.
         """
         try:
             # Read only the request line — enough to extract the path
-            line = await asyncio.wait_for(
-                reader.readline(), timeout=OOB_READ_TIMEOUT_S
-            )
+            line = await asyncio.wait_for(reader.readline(), timeout=OOB_READ_TIMEOUT_S)
             request_line = line.decode("utf-8", errors="replace").strip()
 
             # "GET /uuid-here HTTP/1.1"
@@ -337,6 +328,9 @@ class OOBListener:
                 await writer.wait_closed()
             except (BrokenPipeError, ConnectionResetError):
                 pass
+    
+    def register_canary(self, canary: str):
+        self._canaries.add(canary)
 
     def was_hit(self, canary: str) -> bool:
         return canary in self._hits
@@ -357,7 +351,8 @@ async def _inject(
     method: str,
     value: str,
     base_params: dict[str, list[str]],
-) -> httpx.Response | None:
+    json_mode: bool = False
+    ) -> httpx.Response | None:
     """
     Injects value into parameter.
     GET: rewrites query string.
@@ -366,9 +361,7 @@ async def _inject(
     Never follows redirects — redirect inspection is explicit.
     Retries with exponential backoff on timeout.
     """
-    merged: dict[str, str] = {
-        k: v[0] if v else "" for k, v in base_params.items()
-    }
+    merged = {k: v[0] if v else "" for k, v in base_params.items()}
     merged[parameter] = value
 
     for attempt in range(MAX_RETRIES):
@@ -377,7 +370,11 @@ async def _inject(
                 parsed  = urlparse(url)
                 new_url = parsed._replace(query=urlencode(merged)).geturl()
                 return await client.get(new_url)
-            return await client.post(url, data=merged)
+            # POST
+            if json_mode:
+                return await client.post(url, json=merged)
+            else:
+                return await client.post(url, data=merged)
 
         except httpx.TimeoutException:
             if attempt < MAX_RETRIES - 1:
@@ -523,7 +520,7 @@ def _chain_ssrf_metadata(
     )
 
 
-# ── PARAMETER RANKER ──────────────────────────────────────────
+# PARAMETER RANKER
 
 def _rank_params(
     probe_result: ProbeResult,
@@ -612,15 +609,8 @@ async def _test_ssrf(
     async with sem:
         # Phase 1: Cloud metadata probes
         for metadata_url in CLOUD_METADATA_URLS:
-            resp = await _inject(
-                client, param.url, param.parameter,
-                param.method, metadata_url, param.base_params,
-            )
-            if resp is None:
-                continue
-
-            body_lower = resp.text.lower()
-            if any(sig in body_lower for sig in _METADATA_CONTENT_SIGNALS):
+            resp = await _inject(client, param.url, param.parameter,param.method, metadata_url, param.base_params)
+            if resp and any(sig in resp.text.lower() for sig in _METADATA_CONTENT_SIGNALS):
                 finding = SSRFRedirectFinding(
                     url=param.url, parameter=param.parameter, method=param.method,
                     finding_type=FindingType.SSRF_CONFIRMED,
@@ -638,64 +628,42 @@ async def _test_ssrf(
 
         # Phase 2: OOB HTTP callback
         if oob.is_active:
-            canary     = str(uuid.uuid4())
+            canary = str(uuid.uuid4())
+            oob.register_canary(canary)
             canary_url = oob.canary_url(canary)
 
-            await _inject(
-                client, param.url, param.parameter,
-                param.method, canary_url, param.base_params,
-            )
+            await _inject(client, param.url, param.parameter,param.method, canary_url, param.base_params)
             # Wait outside the semaphore would starve other tasks —
-            # we wait briefly inside since OOB_WAIT_S is bounded.
-            await asyncio.sleep(OOB_WAIT_S)
+            # we wait briefly inside since OOB_WAIT_S is bounded
 
             if oob.was_hit(canary):
                 _add_finding(SSRFRedirectFinding(
-                    url=param.url, parameter=param.parameter, method=param.method,
+                    url=param.url, 
+                    parameter=param.parameter, 
+                    method=param.method,
                     finding_type=FindingType.SSRF_BLIND_OOB,
                     severity=Severity.HIGH,
                     payload=canary_url,
                     evidence=f"HTTP callback received for canary: {canary}",
                     oob_hit=True,
                 ))
-                log.warning(
-                    f"[SSRF] ★ HIGH — Blind SSRF (OOB confirmed)\n"
-                    f"       {param.url} ?{param.parameter}"
-                )
+                log.warning(f"[SSRF] ★ HIGH Blind SSRF (OOB) → {param.url}?{param.parameter}")
 
         # Phase 3: Behavioral signal probes
-        behavioral_found = False
         for target_ip in _SSRF_TARGETS:
-            if behavioral_found:
-                break
-            for scheme_tpl in _SSRF_SCHEMES:
-                if "{T}" not in scheme_tpl:
-                    # file:///etc/passwd — no substitution
-                    payload = scheme_tpl
-                else:
-                    payload = scheme_tpl.replace("{T}", target_ip)
+            for scheme_tpl in _SSRF_SCHEMES[:8]:
+                payload = scheme_tpl.replace("{T}", target_ip) if "{T}" in scheme_tpl else scheme_tpl
 
-                resp = await _inject(
-                    client, param.url, param.parameter,
-                    param.method, payload, param.base_params,
-                )
-                if resp is None:
-                    continue
-
-                body_lower = resp.text.lower()
-                if any(sig in body_lower for sig in _SSRF_BEHAVIORAL_SIGNALS):
+                resp = await _inject(client, param.url, param.parameter, param.method, payload, param.base_params)
+                if resp and any(sig in resp.text.lower() for sig in _SSRF_BEHAVIORAL_SIGNALS):
                     _add_finding(SSRFRedirectFinding(
                         url=param.url, parameter=param.parameter, method=param.method,
                         finding_type=FindingType.SSRF_BEHAVIORAL,
                         severity=Severity.MEDIUM,
                         payload=payload,
-                        evidence=resp.text[:300],
+                        evidence=resp.text[:300]
                     ))
-                    log.warning(
-                        f"[SSRF] ★ MEDIUM — Behavioral indicator\n"
-                        f"       {param.url} ?{param.parameter} | {payload}"
-                    )
-                    behavioral_found = True
+                    log.warning(f"[SSRF] ★ MEDIUM Behavioral SSRF → {param.url}?{param.parameter}")
                     break
 
     return findings
@@ -793,10 +761,7 @@ def _save_results(result: SSRFRedirectResult) -> Path:
 
 
 # ASYNC ORCHESTRATOR
-async def _run_scan(
-    probe_result: ProbeResult,
-    param_result: ParamScanResult,
-) -> SSRFRedirectResult:
+async def _run_scan(probe_result: ProbeResult, param_result: ParamScanResult) -> SSRFRedirectResult:
     result = SSRFRedirectResult(target=probe_result.target)
     sem = asyncio.Semaphore(CONCURRENCY)
     oob = OOBListener()
@@ -808,7 +773,7 @@ async def _run_scan(
         timeout=timeout,
         verify=False,
         follow_redirects=False,  # Never auto-follow — we inspect manually
-        headers={"User-Agent": "Mozilla/5.0 (compatible; PHANTOM-Scanner/1.0)"},
+        headers={"User-Agent": "Mozilla/5.0 (compatible; PHANTOM-Scanner/1.0)"}
     ) as client:
         ranked = _rank_params(probe_result, param_result)
 
@@ -822,20 +787,14 @@ async def _run_scan(
         tasks: list[asyncio.Task] = []
         for param in ranked:
             if param.test_ssrf:
-                tasks.append(asyncio.create_task(
-                    _test_ssrf(client, param, oob, sem)
-                ))
+                tasks.append(asyncio.create_task(_test_ssrf(client, param, oob, sem)))
             if param.test_redirect:
-                tasks.append(asyncio.create_task(
-                    _test_redirect(client, param, sem)
-                ))
+                tasks.append(asyncio.create_task(_test_redirect(client, param, sem)))
 
-        gathered: list[list[SSRFRedirectFinding]] = await asyncio.gather(
-            *tasks, return_exceptions=False
-        )
+        gathered: list[list[SSRFRedirectFinding]] = await asyncio.gather(*tasks, return_exceptions=False)
 
         # Global deduplication across all params
-        global_seen: set[tuple[str, str, str]] = set()
+        global_seen: set[tuple] = set()
         for batch in gathered:
             for finding in batch:
                 key = finding.dedup_key
