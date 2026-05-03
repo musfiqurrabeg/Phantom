@@ -26,6 +26,7 @@ from modules.ai_brain import (
     create_scan_state, ai_decision, ai_triage,
     check_and_escalate, AnalysisPhase, ScanState,
 )
+from modules.deduplicator import deduplicate_findings, DeduplicationResult
 
 app = typer.Typer(
     name="phantom",
@@ -106,6 +107,7 @@ def scan(
 
 def _run_pipeline(target: str) -> None:
     log.info(f"[PIPELINE] Starting scan: {target}")
+    state = create_scan_state(target)
 
     # Subdomain Enumeration
     subdomain_result = _run_step(
@@ -236,6 +238,23 @@ def _run_pipeline(target: str) -> None:
     )
     log.info(f"[PIPELINE] Auth findings: {auth_result.confirmed_count}")
     log.info(f"[PIPELINE] Attack chains: {len(auth_result.chain_opportunities)}")
+
+    # Collect findings for legacy main.py state
+    for res in [xss_result, sqli_result, ssrf_result, auth_result]:
+        if hasattr(res, "findings") and getattr(res, "findings"):
+            state.all_findings.extend(res.findings)
+
+    # After all scanning + AI triage — before reporting
+    # Add all findings to state first (already done via check_and_escalate)
+    # Then deduplicate:
+
+    dedup_result = deduplicate_findings(
+        target=target,
+        raw_findings=state.all_findings,
+    )
+    log.info(f"[PIPELINE] Unique findings: {dedup_result.stats.unique_total}")
+    log.info(f"[PIPELINE] Dedup ratio:     {dedup_result.stats.dedup_ratio:.0%}")
+    log.info(f"[PIPELINE] Critical:        {dedup_result.critical_count}")
 
     log.info(f"[PIPELINE] Scan complete: {target}")
     
