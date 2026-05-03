@@ -75,23 +75,40 @@ def get_logger(name: str = "PHANTOM") -> logging.Logger:
     return logger
 
 def print_banner():
+    W  = '\033[0m'
+    B  = '\033[1m'
+    DIM = '\033[2m'
+    CY = '\033[96m'
+    MG = '\033[95m'
+    YL = '\033[93m'
+    RD = '\033[91m'
+    GN = '\033[92m'
+    BL = '\033[94m'
+    WH = '\033[97m'
+    GR = '\033[90m'  # dark gray
+
     banner = f"""
-{Colors.MAGENTA}{Colors.BOLD}
-██████╗ ██╗  ██╗ █████╗ ███╗   ██╗████████╗ ██████╗ ███╗   ███╗
-██╔══██╗██║  ██║██╔══██╗████╗  ██║╚══██╔══╝██╔═══██╗████╗ ████║
-██████╔╝███████║███████║██╔██╗ ██║   ██║   ██║   ██║██╔████╔██║
-██╔═══╝ ██╔══██║██╔══██║██║╚██╗██║   ██║   ██║   ██║██║╚██╔╝██║
-██║     ██║  ██║██║  ██║██║ ╚████║   ██║   ╚██████╔╝██║ ╚═╝ ██║
-╚═╝     ╚═╝  ╚═╝╚═╝  ╚═╝╚═╝  ╚═══╝   ╚═╝    ╚═════╝ ╚═╝     ╚═╝
-{Colors.RESET}
-{Colors.CYAN} VAPT Automation By @musfiqurrabeg{Colors.RESET}
-{Colors.YELLOW} Bug Bounty Automator — macOS{Colors.RESET}
-{Colors.WHITE} ─────────────────────────────────{Colors.RESET}
+{GR}{'─' * 64}{W}
+{MG}{B}
+  ██████╗ ██╗  ██╗ █████╗ ███╗   ██╗████████╗ ██████╗ ███╗   ███╗
+  ██╔══██╗██║  ██║██╔══██╗████╗  ██║╚══██╔══╝██╔═══██╗████╗ ████║
+  ██████╔╝███████║███████║██╔██╗ ██║   ██║   ██║   ██║██╔████╔██║
+  ██╔═══╝ ██╔══██║██╔══██║██║╚██╗██║   ██║   ██║   ██║██║╚██╔╝██║
+  ██║     ██║  ██║██║  ██║██║ ╚████║   ██║   ╚██████╔╝██║ ╚═╝ ██║
+  ╚═╝     ╚═╝  ╚═╝╚═╝  ╚═╝╚═╝  ╚═══╝   ╚═╝    ╚═════╝ ╚═╝     ╚═╝
+{W}
+  {GR}▸ {CY}{B}VAPT Automation Framework{W}  {GR}│{W}  {GR}▸ {YL}v1.0.0{W}  {GR}│{W}  {GR}▸ {GN}macOS{W}
+{GR}{'─' * 64}{W}
+  {GR}author  {W}{WH}@musfiqurrabeg{W}   {GR}mode  {W}{RD}{B}BUG BOUNTY{W}   {GR}target  {W}{MG}ACTIVE{W}
+{GR}{'─' * 64}{W}
+{GR}{'─' * 64}{W}
+  {DIM}{GR}\"Automate the boring. Hunt the critical.\"{W}
+{GR}{'─' * 64}{W}
 """
     print(banner)
 
 
-# ── SECTION PRINTER ──────────────────────────────────────────
+# SECTION PRINTER
 def section(title: str):
     """Prints a clean section divider in terminal."""
     print(f"\n{Colors.BOLD}{Colors.BLUE}{'─' * 50}{Colors.RESET}")
