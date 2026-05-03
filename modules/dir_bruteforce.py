@@ -9,6 +9,7 @@ from pathlib import Path
 
 from config.settings import OUTPUT_DIR, DIR_WORDLIST, RATE_LIMIT_DELAY
 from core.logger import get_logger, section
+from core.sanitize import safe_filename
 from core.tool_checker import require_tools
 from modules.host_probe import ProbeResult, HostRecord
 
@@ -156,16 +157,22 @@ def _parse_ffuf_output(raw_json: str, base_url: str, hostname: str) -> list[Disc
 
     discovered: list[DiscoveredPath] = []
     for entry in raw_results:
-        status = int(entry.get("status", 0))
+        try:
+            status = int(entry.get("status", 0))
+        except (TypeError, ValueError):
+            continue
         
         if status not in INTERESTING_CODES:
             continue
 
         path = entry.get("input", {}).get("FUZZ", "").strip("/")
         url = entry.get("url", f"{base_url}/{path}")
-        length = int(entry.get("length", 0))
-        words = int(entry.get("words", 0))
-        lines = int(entry.get("lines", 0))
+        try:
+            length = int(entry.get("length", 0))
+            words = int(entry.get("words", 0))
+            lines = int(entry.get("lines", 0))
+        except (TypeError, ValueError):
+            length, words, lines = 0, 0, 0
         is_high = path.lower() in HIGH_VALUE_PATHS
 
         discovered.append(DiscoveredPath(
@@ -264,7 +271,7 @@ def _save_results(result: DirScanResult) -> Path:
     """Saves DirScanResult to output/directories/<target>.json"""
     OUTPUT_PATH.mkdir(parents=True, exist_ok=True)
 
-    safe_name   = result.target.replace(".", "_")
+    safe_name   = safe_filename(result.target)
     output_file = OUTPUT_PATH / f"{safe_name}_directories.json"
 
     with output_file.open("w", encoding="utf-8") as f:
