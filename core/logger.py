@@ -37,7 +37,7 @@ class ColorFormatter(logging.Formatter):
 
 class PlainFormatter(logging.Formatter):
     def format(self, record):
-        time  = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        time  = datetime.fromtimestamp(record.created).strftime("%Y-%m-%d %H:%M:%S")
         return f"[{time}] [{record.levelname}] {record.getMessage()}"
     
 def get_logger(name: str = "PHANTOM") -> logging.Logger:
