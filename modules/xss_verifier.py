@@ -8,6 +8,7 @@ from pathlib import Path
 from urllib.parse import urlparse, urlencode, parse_qs
 
 from core.logger import get_logger
+from core.sanitize import safe_filename
 from config.settings import OUTPUT_DIR
 
 log = get_logger()
@@ -121,7 +122,7 @@ async def _verify_finding(
             dialog_text = dialog.message
             dialog_fired.set()
             # Schedule dismiss — can't await inside sync callback
-            asyncio.ensure_future(dialog.dismiss())
+            asyncio.create_task(dialog.dismiss())
 
         page.on("dialog", _on_dialog)
 
@@ -289,7 +290,7 @@ def _save_report(report: VerifierReport) -> Path:
     """Saves VerifierReport to output/xss/<target>_verified.json"""
     OUTPUT_PATH.mkdir(parents=True, exist_ok=True)
 
-    safe_name   = report.target.replace(".", "_")
+    safe_name   = safe_filename(report.target)
     output_file = OUTPUT_PATH / f"{safe_name}_xss_verified.json"
 
     with output_file.open("w", encoding="utf-8") as f:
