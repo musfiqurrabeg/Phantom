@@ -60,6 +60,7 @@ from modules.ai_brain import (
     create_scan_state,
 )
 from modules.broken_auth_idor import AuthScanResult, scan_broken_auth_idor
+from modules.deduplicator import DeduplicationResult, deduplicate_findings
 from modules.dir_bruteforce import DirScanResult, bruteforce_directories
 from modules.host_probe import ProbeResult, probe_live_hosts
 from modules.js_analyzer import JSAnalysisResult, analyze_javascript
@@ -337,7 +338,7 @@ def _run_pipeline(target: str, missing_tools: set[str]) -> ScanReport:
     if _should_run(state, "dir_bruteforce") and tool_ok("ffuf"):
         dir_result = _run_step(
             "Directory Bruteforce",
-            DirScanResult(target=target),
+            None,
             bruteforce_directories,
             probe_result,
         )
@@ -360,16 +361,20 @@ def _run_pipeline(target: str, missing_tools: set[str]) -> ScanReport:
             report.findings_by_module["js_analyzer"] = js_result.total_secrets
 
     # Parameter Discovery — js_result may be None; module must handle it
-    param_result: ParamScanResult = _run_step(
-        "Parameter Discovery",
-        ParamScanResult(target=target),
-        discover_parameters,
-        probe_result,
-        wayback_result,
-        js_result,
-    )
-    log.info(f"[SCAN] Parameters found: {param_result.total_params}")
-    log.info(f"[SCAN] Injectable URLs : {len(param_result.injectable_urls)}")
+    param_result: ParamScanResult = ParamScanResult(target=target)
+    if _should_run(state, "param_discovery"):
+        res = _run_step(
+            "Parameter Discovery",
+            None,
+            discover_parameters,
+            probe_result,
+            wayback_result,
+            js_result,
+        )
+        if res:
+            param_result = res
+            log.info(f"[SCAN] Parameters found: {param_result.total_params}")
+            log.info(f"[SCAN] Injectable URLs : {len(param_result.injectable_urls)}")
 
     # XSS Scanner
     xss_result: Optional[XSSScanResult] = None
@@ -399,13 +404,14 @@ def _run_pipeline(target: str, missing_tools: set[str]) -> ScanReport:
             # .to_dict() was bare — if it raised, the crash was outside _run_step.
             # Fix: route through _safe_dict() which never raises.
             if tool_ok("playwright"):
-                _run_step(
+                xss_verified = _run_step(
                     "XSS Execution Verification",
                     VerifierReport(target=target),
                     verify_xss_findings,
                     _safe_dict(xss_result),
                     target,
                 )
+                log.info(f"[SCAN] XSS executed in browser: {xss_verified.executed_count}")
 
     # SQLi Scanner — BUG 7 FIX: assign findings once, use len() not .__len__()
     sqli_result: Optional[SQLiScanResult] = None
@@ -498,6 +504,18 @@ def _run_pipeline(target: str, missing_tools: set[str]) -> ScanReport:
         state=state,
         tech_result=tech_dict,
     )
+
+    # After all scanning + AI triage — before reporting
+    # Add all findings to state first (already done via check_and_escalate)
+    # Then deduplicate:
+
+    dedup_result = deduplicate_findings(
+        target=target,
+        raw_findings=state.all_findings,
+    )
+    log.info(f"[PIPELINE] Unique findings: {dedup_result.stats.unique_total}")
+    log.info(f"[PIPELINE] Dedup ratio:     {dedup_result.stats.dedup_ratio:.0%}")
+    log.info(f"[PIPELINE] Critical:        {dedup_result.critical_count}")
 
     # ── Populate final report ─────────────────────────────────────────────
     report.ai_tokens = getattr(state, "total_tokens", 0)
