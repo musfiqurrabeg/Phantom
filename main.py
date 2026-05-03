@@ -21,6 +21,11 @@ from modules.xss_scanner import scan_xss, XSSScanResult
 from modules.xss_verifier import verify_xss_findings, VerifierReport
 from modules.sqli_scanner import scan_sqli, SQLiScanResult
 from modules.ssrf_redirect import scan_ssrf_redirect, SSRFRedirectResult
+from modules.broken_auth_idor import scan_broken_auth_idor, AuthScanResult
+from modules.ai_brain import (
+    create_scan_state, ai_decision, ai_triage,
+    check_and_escalate, AnalysisPhase, ScanState,
+)
 
 app = typer.Typer(
     name="phantom",
@@ -220,7 +225,20 @@ def _run_pipeline(target: str) -> None:
     log.info(f"[PIPELINE] SSRF findings: {len(ssrf_result.findings)}")
     log.info(f"[PIPELINE] Attack chains: {ssrf_result.chain_count}")
 
+    # Broken Auth + IDOR
+    auth_result = _run_step(
+        "Broken Auth + IDOR",
+        AuthScanResult(target=target),
+        scan_broken_auth_idor,
+        probe_result,
+        param_result,
+        js_result,
+    )
+    log.info(f"[PIPELINE] Auth findings: {auth_result.confirmed_count}")
+    log.info(f"[PIPELINE] Attack chains: {len(auth_result.chain_opportunities)}")
+
     log.info(f"[PIPELINE] Scan complete: {target}")
+    
 
 @app.command()
 def version() -> None:
