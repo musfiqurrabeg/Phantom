@@ -7,6 +7,7 @@ from pathlib import Path
 
 from config.settings import OUTPUT_DIR, HTTP_TIMEOUT
 from core.logger import get_logger, section
+from core.sanitize import safe_filename
 from core.tool_checker import require_tools
 
 log = get_logger()
@@ -122,7 +123,7 @@ def _save_results(result: SubdomainResult) -> Path:
 
     OUTPUT_PATH.mkdir(parents=True, exist_ok=True)
     
-    safe_name = result.target.replace(".", "_")
+    safe_name = safe_filename(result.target)
     output_file = OUTPUT_PATH / f"{safe_name}_subdomains.json"
 
     with output_file.open("w", encoding="utf-8") as f:
