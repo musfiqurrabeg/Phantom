@@ -12,6 +12,7 @@ import httpx
 
 from config.settings import HTTP_TIMEOUT, HTTP_VERIFY_SSL, OUTPUT_DIR
 from core.logger import get_logger, section
+from core.sanitize import safe_filename
 from core.tool_checker import require_tools
 from modules.host_probe import ProbeResult
 from modules.wayback_harvest import WaybackResult
@@ -376,7 +377,7 @@ def _save_results(result: ParamScanResult) -> Path:
     """Saves ParamScanResult to output/parameters/<target>.json"""
     OUTPUT_PATH.mkdir(parents=True, exist_ok=True)
 
-    safe_name   = result.target.replace(".", "_")
+    safe_name   = safe_filename(result.target)
     output_file = OUTPUT_PATH / f"{safe_name}_params.json"
 
     with output_file.open("w", encoding="utf-8") as f:
