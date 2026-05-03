@@ -10,6 +10,7 @@ import httpx
 
 from config.settings import HTTP_TIMEOUT, HTTP_VERIFY_SSL, OUTPUT_DIR
 from core.logger import get_logger, section
+from core.sanitize import safe_filename
 from modules.host_probe import ProbeResult, HostRecord
 
 log = get_logger()
@@ -300,7 +301,7 @@ def _save_results(result: TechScanResult) -> Path:
     """Saves TechScanResult to output/fingerprints/<target>.json"""
     OUTPUT_PATH.mkdir(parents=True, exist_ok=True)
 
-    safe_name   = result.target.replace(".", "_")
+    safe_name   = safe_filename(result.target)
     output_file = OUTPUT_PATH / f"{safe_name}_fingerprint.json"
 
     with output_file.open("w", encoding="utf-8") as f:
