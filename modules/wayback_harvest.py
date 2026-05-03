@@ -10,6 +10,7 @@ from urllib.parse import urlparse, parse_qs
 
 from config.settings import OUTPUT_DIR
 from core.logger import get_logger, section
+from core.sanitize import safe_filename
 from core.tool_checker import require_tools
 
 log = get_logger()
@@ -234,7 +235,7 @@ def _save_results(result: WaybackResult) -> Path:
     """Saves WaybackResult to output/wayback/<target>.json"""
     OUTPUT_PATH.mkdir(parents=True, exist_ok=True)
 
-    safe_name   = result.target.replace(".", "_")
+    safe_name   = safe_filename(result.target)
     output_file = OUTPUT_PATH / f"{safe_name}_wayback.json"
 
     with output_file.open("w", encoding="utf-8") as f:
