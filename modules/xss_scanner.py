@@ -1,6 +1,5 @@
 # modules/xss_scanner.py
 from __future__ import annotations
-
 import asyncio
 import hashlib
 import json
@@ -16,6 +15,7 @@ from bs4 import BeautifulSoup
 
 from config.settings import HTTP_TIMEOUT, HTTP_VERIFY_SSL, MAX_THREADS, OUTPUT_DIR
 from core.logger import get_logger, section
+from core.sanitize import safe_filename
 from modules.host_probe import ProbeResult
 from modules.param_discovery import ParamScanResult
 
@@ -307,7 +307,7 @@ def _apply_waf_bypasses(payload: str) -> list[str]:
     """
     variants: list[str] = [payload]
 
-    has_tag    = "<" in payload and ">" in payload
+    has_tag = "<" in payload and ">" in payload
     has_event  = "=" in payload and any(
         e in payload.lower()
         for e in ("onerror", "onload", "onfocus", "onmouseover", "ontoggle")
@@ -349,8 +349,15 @@ def _apply_waf_bypasses(payload: str) -> list[str]:
         variants.append(payload.replace("<", "<\x00"))
 
     # 6. Tab/newline injection in tag
-    if has_tag:
-        variants.append(payload.replace(" on", "\ton").replace(" on", "\non"))
+    # Only replace space-before-event-handler, not all " on" occurrences
+    # Guard: only apply if replacement preserves the event= structure
+    if has_tag and has_event:
+        tab_variant   = re.sub(r" (on\w+=)", r"\t\1", payload)
+        newline_variant = re.sub(r" (on\w+=)", r"\n\1", payload)
+        if tab_variant != payload:
+            variants.append(tab_variant)
+        if newline_variant != payload:
+            variants.append(newline_variant)
 
     # 7. String concatenation to break JS keyword detection
     if has_js_call:
@@ -392,73 +399,6 @@ def _apply_waf_bypasses(payload: str) -> list[str]:
 
     return unique
 
-# def _apply_waf_bypasses(payload: str) -> list[str]:
-#     """2026-grade WAF bypass engine."""
-#     variants: list[str] = [payload]
-#     lower = payload.lower()
-
-#     has_tag     = "<" in payload and ">" in payload
-#     has_event   = any(
-#         e in lower
-#         for e in (
-#             "onerror", "onload", "onfocus", "onmouseover",
-#             "ontoggle", "onbegin", "onanimationstart", "onbeforetoggle",
-#         )
-#     )
-#     has_confirm = "confirm" in lower or "alert" in lower
-
-#     # 1. Smart case fuzzing on event handlers
-#     if has_event:
-#         for event in (
-#             "onerror", "onload", "onfocus", "onmouseover",
-#             "ontoggle", "onanimationstart", "onbeforetoggle",
-#         ):
-#             if event in lower:
-#                 variants.append(payload.replace(event, event.capitalize()))
-#                 variants.append(payload.replace(event, event.upper()))
-#                 break  # One event per payload — avoid combinatorial explosion
-
-#     # 2. Encoding chains — only on tag payloads
-#     if has_tag:
-#         variants.append(payload.replace("<", "%3C").replace(">", "%3E"))
-#         variants.append(payload.replace("<", "%253C").replace(">", "%253E"))
-#         variants.append(payload.replace("<", "&#x3C;").replace(">", "&#x3E;"))
-#         # Tab/newline injection — bypasses space-sensitive regex WAFs
-#         variants.append(payload.replace(" on", "\ton"))
-#         variants.append(payload.replace(" on", "\non"))
-
-#     # 3. Comment-based whitespace bypass — guard against JSON payloads
-#     if has_tag and "{" not in payload:
-#         variants.append(payload.replace(" ", "/**/"))
-
-#     # 4. JS keyword breaking — only when confirm present
-#     if has_confirm:
-#         variants.append(payload.replace("confirm(", 'co"+"nfirm('))
-#         variants.append(payload.replace("confirm(", "confirm/**/("))
-#         variants.append(payload.replace("confirm", 'window["confirm"]'))
-#         variants.append(payload.replace("confirm", "\\u0063onfirm"))
-#         variants.append(payload.replace("confirm", "\\x63onfirm"))
-
-#     # 5. SVG-specific tricks
-#     if "<svg" in lower:
-#         variants.append(
-#             payload.replace("<svg", "<svg xmlns='http://www.w3.org/2000/svg'")
-#         )
-#         variants.append(
-#             payload.replace("<svg onload", "<svg><animate onbegin")
-#         )
-
-#     # Deduplicate preserving order
-#     seen:   set[str]  = {payload}
-#     unique: list[str] = [payload]
-#     for v in variants[1:]:
-#         if v and v not in seen:
-#             seen.add(v)
-#             unique.append(v)
-
-#     return unique[:14]
-
-
 
 
 # MULTI-PROBE CONTEXT DETECTOR
@@ -482,9 +422,24 @@ def _detect_all_contexts(
     detected: set[XSSContext] = set()
 
     for body, probe in zip(response_bodies, probe_values, strict=False):
-        if probe not in body:
-            continue
+        # Normalize JSON-encoded probe values before context detection
+        _probe_normalized = probe.strip('"\'')  # strip surrounding quotes from probe styles
+        _body_check = body
 
+        # Handle JSON responses — probe may be value in JSON string
+        if body.strip().startswith(("{", "[")):
+            try:
+                import json as _json
+                _parsed = _json.loads(body)
+                _flat = _json.dumps(_parsed)
+                if _probe_normalized in _flat:
+                    _body_check = _flat
+            except (ValueError, TypeError):
+                pass
+
+        if probe not in _body_check and _probe_normalized not in _body_check:
+            continue
+        body = _body_check  # use normalized for context detection below
         soup = BeautifulSoup(body, "html.parser")
 
         # Script block context
@@ -513,7 +468,7 @@ def _detect_all_contexts(
                     continue
                 if attr_name in ("href", "src", "action", "formaction", "data"):
                     detected.add(XSSContext.URL_HREF)
-                elif f'"{probe}"' in body or f"={probe}" not in body:
+                elif f'"{probe}"' in body:
                     detected.add(XSSContext.HTML_ATTR_DQ)
                 elif f"'{probe}'" in body:
                     detected.add(XSSContext.HTML_ATTR_SQ)
@@ -546,22 +501,38 @@ def _analyze_reflection(
 
     Confirmed = canary present unencoded + executable context + CSP allows exec.
     """
-    if canary not in response_body:
+    # Normalize encoded variants before checking presence
+    _normalized = (
+        response_body
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&#x3C;", "<")
+        .replace("&#x3E;", ">")
+        .replace("%3C", "<")
+        .replace("%3E", ">")
+    )
+    if canary not in response_body and canary not in _normalized:
         return False, XSSSeverity.INFO, ""
 
-    idx      = response_body.find(canary)
-    start    = max(0, idx - 80)
-    end      = min(len(response_body), idx + 150)
-    evidence = response_body[start:end].strip()
+    # Use whichever body contains the canary for evidence extraction
+    _body_for_analysis = response_body if canary in response_body else _normalized
+
+    idx = _body_for_analysis.find(canary)
+    start = max(0, idx - 80)
+    end = min(len(_body_for_analysis), idx + 150)
+    evidence = _body_for_analysis[start:end].strip()
 
     csp = _parse_csp(response_headers)
 
     # Check for entity encoding — WAF/framework sanitized it
-    entity_encoded = (
-        canary.replace("<", "&lt;") in response_body or
-        canary.replace(">", "&gt;") in response_body
+    # Only downgrade if canary is ONLY present in encoded form, never raw
+    canary_raw_present = canary in response_body
+    canary_encoded_present = (
+        canary.replace("<", "&lt;") in response_body
+        or canary.replace(">", "&gt;") in response_body
+        or canary.replace("<", "&#x3C;") in response_body
     )
-    if entity_encoded and canary not in response_body.replace("&lt;", "<").replace("&gt;", ">"):
+    if canary_encoded_present and not canary_raw_present:
         return False, XSSSeverity.LOW, evidence
 
     # Executable JS contexts = confirmed if canary unencoded
@@ -677,7 +648,7 @@ def _analyze_dom_xss(js_url: str, content: str) -> list[DOMFinding]:
     source_lines: dict[str, list[int]] = {}
     for source_pat, source_weight in _DOM_SOURCES.items():
         compiled = re.compile(source_pat, re.IGNORECASE)
-        matched  = [i for i, line in enumerate(lines) if compiled.search(line)]
+        matched = [i for i, line in enumerate(lines) if compiled.search(line)]
         if matched:
             source_lines[source_pat] = matched
 
@@ -790,12 +761,12 @@ class XSSScanResult:
 
     def to_dict(self) -> dict:
         return {
-            "target":           self.target,
-            "total_findings":   len(self.findings),
-            "confirmed":        self.confirmed_count,
-            "high_and_above":   len(self.high_and_above),
-            "dom_findings":     len(self.dom_findings),
-            "findings":         [f.to_dict() for f in self.findings],
+            "target": self.target,
+            "total_findings": len(self.findings),
+            "confirmed": self.confirmed_count,
+            "high_and_above": len(self.high_and_above),
+            "dom_findings": len(self.dom_findings),
+            "findings": [f.to_dict() for f in self.findings],
             "dom_findings_detail": [d.to_dict() for d in self.dom_findings],
         }
 
@@ -803,7 +774,7 @@ class XSSScanResult:
 # CANARY GENERATOR
 def _make_canary(url: str, param: str, index: int) -> str:
     """Deterministic unique canary per url+param+index. 8-char hex suffix."""
-    raw    = f"{url}:{param}:{index}"
+    raw = f"{url}:{param}:{index}"
     digest = hashlib.sha256(raw.encode()).hexdigest()[:8].upper()
     return f"{CANARY_PREFIX}{digest}"
 
@@ -811,12 +782,12 @@ def _make_canary(url: str, param: str, index: int) -> str:
 # HTTP INJECTOR WITH RETRY
 
 async def _inject(
-    client:       httpx.AsyncClient,
-    url:          str,
-    param:        str,
-    method:       str,
-    value:        str,
-    base_params:  dict[str, list[str]],
+    client: httpx.AsyncClient,
+    url: str,
+    param: str,
+    method: str,
+    value: str,
+    base_params: dict[str, list[str]],
     content_type: str = "form",
 ) -> httpx.Response | None:
     """
@@ -922,7 +893,8 @@ async def _test_parameter(
         # Phase 3: Expand with WAF bypass variants
         all_payloads: list[str] = []
         for bp in base_payloads:
-            all_payloads.extend(_apply_waf_bypasses(bp))
+            bypasses = _apply_waf_bypasses(bp)
+            all_payloads.extend(bypasses)
             if len(all_payloads) >= MAX_PAYLOADS_PER_PARAM:
                 break
         all_payloads = all_payloads[:MAX_PAYLOADS_PER_PARAM]
@@ -941,7 +913,7 @@ async def _test_parameter(
                 continue
 
             headers = {k.lower(): v for k, v in resp.headers.items()}
-            csp     = _parse_csp(headers)
+            csp = _parse_csp(headers)
 
             is_confirmed, severity, evidence = _analyze_reflection(
                 resp.text, headers, canary, payload, detected_contexts
@@ -1073,7 +1045,7 @@ def _build_test_targets(
 
 def _save_results(result: XSSScanResult) -> Path:
     OUTPUT_PATH.mkdir(parents=True, exist_ok=True)
-    safe_name   = result.target.replace(".", "_")
+    safe_name   = safe_filename(result.target)
     output_file = OUTPUT_PATH / f"{safe_name}_xss.json"
 
     with output_file.open("w", encoding="utf-8") as f:
