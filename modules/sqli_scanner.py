@@ -13,8 +13,9 @@ from urllib.parse import urlparse, parse_qs, urlencode
 
 import httpx
 
-from config.settings import HTTP_TIMEOUT, MAX_THREADS, OUTPUT_DIR
+from config.settings import HTTP_TIMEOUT, HTTP_VERIFY_SSL, MAX_THREADS, OUTPUT_DIR
 from core.logger import get_logger, section
+from core.sanitize import safe_filename
 from modules.host_probe import ProbeResult
 from modules.param_discovery import ParamScanResult
 
@@ -739,7 +740,7 @@ def _build_targets(
 # SAVE RESULTS
 def _save_results(result: SQLiScanResult) -> Path:
     OUTPUT_PATH.mkdir(parents=True, exist_ok=True)
-    safe      = result.target.replace(".", "_")
+    safe      = safe_filename(result.target)
     out_file  = OUTPUT_PATH / f"{safe}_sqli.json"
     with out_file.open("w", encoding="utf-8") as f:
         json.dump(result.to_dict(), f, indent=2)
@@ -760,7 +761,7 @@ async def _run_sqli_scan(
 
     async with httpx.AsyncClient(
         timeout=timeout,
-        verify=False,
+        verify=HTTP_VERIFY_SSL,
         follow_redirects=True,
         headers={"User-Agent": "Mozilla/5.0 (compatible; PHANTOM-Scanner/1.0)"},
     ) as client:
@@ -774,8 +775,9 @@ async def _run_sqli_scan(
         # ── Pre-filter: concurrent scoring + baseline measurement ──
         scored: list[ScanTarget] = await asyncio.gather(
             *[_prefilter(client, t, filter_sem) for t in raw_targets],
-            return_exceptions=False,
+            return_exceptions=True,
         )
+        scored = [t for t in scored if isinstance(t, ScanTarget)]
 
         passing = sorted(
             (t for t in scored if t.passes),
@@ -798,11 +800,11 @@ async def _run_sqli_scan(
             return result
 
         # Detection: cascade per passing target
-        findings: list[SQLiFinding | None] = await asyncio.gather(
+        findings: list[SQLiFinding | None | BaseException] = await asyncio.gather(
             *[_test_target(client, t, detect_sem, exploit_mode) for t in passing],
-            return_exceptions=False,
+            return_exceptions=True,
         )
-        result.findings = [f for f in findings if f is not None]
+        result.findings = [f for f in findings if isinstance(f, SQLiFinding)]
 
     return result
 
