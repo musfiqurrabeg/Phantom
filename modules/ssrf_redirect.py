@@ -14,8 +14,9 @@ from urllib.parse import urlparse, urlencode, parse_qs, quote
 
 import httpx
 
-from config.settings import HTTP_TIMEOUT, MAX_THREADS, OUTPUT_DIR
+from config.settings import HTTP_TIMEOUT, HTTP_VERIFY_SSL, MAX_THREADS, OUTPUT_DIR
 from core.logger import get_logger, section
+from core.sanitize import safe_filename
 from modules.host_probe import ProbeResult
 from modules.param_discovery import ParamScanResult
 
@@ -287,7 +288,10 @@ class OOBListener:
             return
 
         try:
-            self._server = await asyncio.start_server(self._handle, "0.0.0.0", OOB_PORT)
+            # Bind to localhost when OOB_HOST is a loopback address,
+            # otherwise bind to all interfaces for external callbacks.
+            bind_addr = "127.0.0.1" if OOB_HOST in ("127.0.0.1", "localhost") else "0.0.0.0"
+            self._server = await asyncio.start_server(self._handle, bind_addr, OOB_PORT)
             log.info(f"[OOB] HTTP listener active on {OOB_HOST}:{OOB_PORT}")
         except OSError as exc:
             log.warning(f"[OOB] Cannot bind port {OOB_PORT}: {exc} — OOB disabled")
@@ -633,8 +637,8 @@ async def _test_ssrf(
             canary_url = oob.canary_url(canary)
 
             await _inject(client, param.url, param.parameter,param.method, canary_url, param.base_params)
-            # Wait outside the semaphore would starve other tasks —
-            # we wait briefly inside since OOB_WAIT_S is bounded
+            # Wait for target server to make the outbound HTTP callback
+            await asyncio.sleep(OOB_WAIT_S)
 
             if oob.was_hit(canary):
                 _add_finding(SSRFRedirectFinding(
@@ -752,7 +756,7 @@ async def _test_redirect(
 # SAVE
 def _save_results(result: SSRFRedirectResult) -> Path:
     OUTPUT_PATH.mkdir(parents=True, exist_ok=True)
-    safe = result.target.replace(".", "_")
+    safe = safe_filename(result.target)
     out_file = OUTPUT_PATH / f"{safe}_ssrf_redirect.json"
     with out_file.open("w", encoding="utf-8") as f:
         json.dump(result.to_dict(), f, indent=2)
@@ -771,7 +775,7 @@ async def _run_scan(probe_result: ProbeResult, param_result: ParamScanResult) ->
     timeout = httpx.Timeout(connect=5.0, read=REQUEST_TIMEOUT, write=5.0, pool=5.0)
     async with httpx.AsyncClient(
         timeout=timeout,
-        verify=False,
+        verify=HTTP_VERIFY_SSL,
         follow_redirects=False,  # Never auto-follow — we inspect manually
         headers={"User-Agent": "Mozilla/5.0 (compatible; PHANTOM-Scanner/1.0)"}
     ) as client:
