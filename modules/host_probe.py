@@ -10,6 +10,7 @@ import httpx
 
 from config.settings import HTTP_TIMEOUT, HTTP_VERIFY_SSL, MAX_THREAD, OUTPUT_DIR
 from core.logger import get_logger, section
+from core.sanitize import safe_filename
 from modules.subdomain_enum import SubdomainResult
 
 
@@ -133,8 +134,8 @@ async def _probe_host(
             log.warning(f"[Probe] Too many redirects → {url}")
         except httpx.HTTPError as exc:
             log.warning(f"[Probe] HTTP error → {url}: {type(exc).__name__}")
-        except Exception as exc:
-            log.warning(f"[Probe] Unexpected error → {url}: {type(exc).__name__}")
+        except (socket.gaierror, OSError) as exc:
+            log.warning(f"[Probe] Network error → {url}: {type(exc).__name__}")
 
     return None
 
@@ -184,7 +185,7 @@ def _save_results(result: ProbeResult) -> Path:
     """Saves ProbeResult to output/hosts/<target>.json"""
     OUTPUT_PATH.mkdir(parents=True, exist_ok=True)
 
-    safe_name = result.target.replace(".", "_")
+    safe_name = safe_filename(result.target)
     output_file = OUTPUT_PATH / f"{safe_name}_hosts.json"
 
     with output_file.open("w", encoding="utf-8") as f:
