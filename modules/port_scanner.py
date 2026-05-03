@@ -10,6 +10,7 @@ from pathlib import Path
 
 from config.settings import OUTPUT_DIR
 from core.logger import get_logger, section
+from core.sanitize import safe_filename
 from core.tool_checker import require_tools
 from modules.host_probe import ProbeResult
 
@@ -238,9 +239,7 @@ def _save_results(result: PortScanResult) -> Path:
     """Saves PortScanResult to output/ports/<target>.json"""
     OUTPUT_PATH.mkdir(parents=True, exist_ok=True)
 
-    safe_name = re.sub(r"[^A-Za-z0-9._-]+", "_", result.target).strip("._-")
-    if not safe_name:
-        safe_name = "target"
+    safe_name = safe_filename(result.target)
     output_file = OUTPUT_PATH / f"{safe_name}_ports.json"
 
     with output_file.open("w", encoding="utf-8") as f:
